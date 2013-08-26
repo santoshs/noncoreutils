@@ -33,10 +33,12 @@
 #include <string.h>
 #include <fcntl.h>
 #include <err.h>
+#include <libgen.h>
 
 #define SRC 0
 #define DEST 1
 
+char *program_name;
 const char *argp_program_version = "randcp 0.1";
 const char *argp_program_bug_address = "<santosh@fossix.org>";
 static char doc[] = "randcp -- Copy random files";
@@ -48,7 +50,7 @@ static struct argp_option options[] = {
 };
 
 struct arguments {
-	unsigned limit;
+	unsigned long limit;
 	char *paths[2];
 };
 
@@ -85,15 +87,11 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
 
 static struct argp argp = {options, parse_opt, args_doc, doc};
 
-int random_sort(const struct dirent **e1, const struct dirent **e2)
-{
-	struct timeval tv;
-
-	gettimeofday(&tv, NULL);
-	srand(tv.tv_usec);
-
-	return random() % 2;
-}
+struct node {
+	int type;
+	char *name;
+	struct node *parent;
+};
 
 int cp(const char * const spath, const char * const dpath)
 {
@@ -112,7 +110,7 @@ int cp(const char * const spath, const char * const dpath)
 	}
 
 	if ((d = open(dpath, O_CREAT|O_EXCL|O_WRONLY, st.st_mode)) < 0) {
-		warn("%s: This shouldn't happen, its a BUG!", dpath);
+		warn("%s", dpath);
 		close(s);
 		return 1;
 	}
@@ -140,17 +138,162 @@ cp_err:
 	return 0;
 }
 
+int is_dir(const struct dirent *ent, const char *path)
+{
+#ifdef _DIRENT_HAVE_D_TYPE
+	if (ent->d_type == DT_DIR)
+		return 1;
+#else
+	struct stat status;
+	/* have to use stat!! */
+	if (stat(path, &status) < 0) {
+		warn("%s", ent->d_name);
+		return 0;
+	}
+
+	if (S_ISDIR(status.st_mode))
+		return 1;
+#endif
+	return 0;
+}
+
+struct node *build_tree(char *dir, struct node ***leaves,
+			unsigned *size, unsigned int *current)
+{
+	DIR *d;
+	struct dirent *ent;
+	struct node *root = NULL, *node;
+	char path[PATH_MAX];
+
+	if (!leaves) {
+		printf("leaves cannot be NULL");
+		return NULL;
+	}
+
+	if (!dir || !*dir)
+		return NULL;
+
+	d = opendir(dir);
+	if (!d)
+		goto out;
+
+	root = malloc(sizeof(struct node));
+	if (!root)
+		goto out;
+
+	root->type = DT_DIR;
+	root->parent = NULL;
+	root->name = basename(strdup(dir));
+
+	if (!*leaves) {
+		*leaves = malloc(512 * sizeof(struct node *));
+		if (!*leaves)
+			goto out;
+		*size = 512;
+	}
+
+	while (1) {
+		errno = 0;
+		ent = readdir(d);
+		if (ent == NULL)
+			goto out;
+
+		/* Avoid that terible recursion */
+		if (strcmp(ent->d_name, "..") == 0 || strcmp(ent->d_name, ".") == 0)
+			continue;
+
+		snprintf(path, NAME_MAX, "%s/%s", dir, ent->d_name);
+		if (is_dir(ent, path)) {
+			node = build_tree(path, leaves, size, current);
+		} else {
+			node = malloc(sizeof(struct node));
+			if (!node)
+				goto out;
+
+			node->name = strdup(ent->d_name);
+			node->type = DT_REG;
+
+			if (*size == *current) {
+				struct node **nleaves;
+				nleaves = realloc(*leaves,
+						  (*size + 512) *
+						  sizeof(struct node *));
+				if (!nleaves)
+					goto out;
+
+				*size += 512;
+				*leaves = nleaves;
+			}
+			(*leaves)[(*current)++] = node;
+		}
+
+		if (node)
+			node->parent = root;
+	}
+
+out:
+	closedir(d);
+	if (errno)
+		err(errno, "Some error\n");
+	return root;
+}
+
+void release_tree(struct node ***leaves_array, int length)
+{
+	struct node **leaves = *leaves_array;
+	int i;
+
+	for (i = 0; i < length; i++) {
+		free(leaves[i]->name);
+		free(leaves[i]);
+	}
+	free(leaves);
+}
+
+void get_path(char *path, struct node *leaf)
+{
+	int s = 0;
+
+	if (leaf->parent == NULL) {
+		sprintf(path, "%s/", leaf->name);
+		return;
+	}
+	get_path(path, leaf->parent);
+	strcat(path, leaf->name);
+	if (leaf->type == DT_DIR)
+		strcat(path, "/");
+}
+
+int copy_random(struct node **list, unsigned length, unsigned num,
+		const char *dest)
+{
+	unsigned int i = 0, n;
+	struct timeval tv;
+	char path[PATH_MAX], dpath[PATH_MAX];
+
+	gettimeofday(&tv, NULL);
+	srand(tv.tv_usec);
+
+	while (i < length && i < num) {
+		n = random() % length;
+		get_path(path, list[n]);
+		sprintf(dpath, "%s/%s", dest, list[n]->name);
+		printf("%s to %s\n", path, dpath);
+		cp(path, dpath);
+		i++;
+	}
+
+	return 0;
+}
+
 int main(int argc, char *argv[])
 {
 	struct arguments args;
 	DIR *src, *dst;
-	struct dirent **list;
-	int n, cstatus;
-	unsigned limit;
-	char *spath, *dpath;
-	struct stat status;
-	pid_t pid;
+	struct node **leaves = NULL;
+	unsigned int size = 0, length = 0;
 
+	program_name = argv[0];
 	args.limit = 1;
 	args.paths[SRC] = NULL;
 	args.paths[DEST] = NULL;
@@ -168,14 +311,7 @@ int main(int argc, char *argv[])
 	/* Both the arguments are directories, lets close the src, since
 	 * scandir will open it */
 	closedir(src);
-
-	dpath = malloc(PATH_MAX + 1); /* should we take care of \0? */
-	if (!dpath)
-		err(errno, "Memory");
-
-	spath = malloc(PATH_MAX + 1);
-	if (!spath)
-		err(errno, "Memory");
+	closedir(dst);
 
 	/* remove trailing '/' if any */
 	if (args.paths[SRC][strlen(args.paths[SRC]) - 1] == '/')
@@ -184,64 +320,12 @@ int main(int argc, char *argv[])
 	if (args.paths[DEST][strlen(args.paths[DEST]) - 1] == '/')
 		args.paths[DEST][strlen(args.paths[DEST]) - 1] = '\0';
 
-	/* we define the filer inline to access the arguments variable for
-	 * paths */
-	int dir_filter(const struct dirent *ent)
-	{
-	#ifdef _DIRENT_HAVE_D_TYPE
-		if (ent->d_type == DT_REG || ent->d_type == DT_LNK)
-			return 1;
-	#else
 
-		/* have to use stat!! */
-		sprintf(spath, "%s/%s", args.paths[SRC], ent->d_name);
-		if (stat(spath, &status) < 0) {
-			warn("%s", ent->d_name);
-			return 0;
-		}
+	build_tree(args.paths[SRC], &leaves, &size, &length);
 
-		if (S_ISREG(status.st_mode))
-			return 1;
-	#endif
-		return 0;
-	}
+	copy_random(leaves, length, args.limit, args.paths[DEST]);
 
-	/* Now we get a list of the files in the src directory */
-	n = scandir(args.paths[SRC], &list, dir_filter, random_sort);
-	if (n < 0) {
-		err(errno, "%s: Error reading directory", args.paths[SRC]);
-	}
-
-	limit = args.limit;
-
-	if ((pid = fork()) == 0) {
-		char spinner[] = {'\\', '|', '/', '-'};
-		int i = 0;
-		while (1) {
-			printf("\r%d [%c]", limit, spinner[i]);
-			fflush(stdout);
-			i = i >= 3?0:i+1;
-			sleep(1);
-		}
-	} else {
-		while (n-- && limit) {
-			sprintf(spath, "%s/%s", args.paths[SRC], list[n]->d_name);
-			sprintf(dpath, "%s/%s", args.paths[DEST], list[n]->d_name);
-			if (!stat(dpath, &status))
-				/* file exists, don't overwrite */
-				continue;
-
-			if (!cp(spath, dpath)) {
-				limit--;
-				free(list[n]);
-			}
-		}
-		free(list);
-
-		kill(pid, 9);
-		wait(&cstatus);
-		printf("\rCopied %d files\n", limit);
-	}
+	release_tree(&leaves, length);
 
 	return 0;
 }
