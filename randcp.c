@@ -21,6 +21,7 @@
 
 #define _ISOC99_SOURCE
 #define _BSD_SOURCE		/* for d_type constants */
+#define _XOPEN_SOURCE
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -157,6 +158,16 @@ int is_dir(const struct dirent *ent, const char *path)
 	return 0;
 }
 
+int exists_p(const char *path)
+{
+	struct stat status;
+
+	if (stat(path, &status) < 0)
+		return 0;
+
+	return 1;
+}
+
 struct node *build_tree(char *dir, struct node ***leaves,
 			unsigned *size, unsigned int *current)
 {
@@ -252,8 +263,6 @@ void release_tree(struct node ***leaves_array, int length)
 
 void get_path(char *path, struct node *leaf)
 {
-	int s = 0;
-
 	if (leaf->parent == NULL) {
 		sprintf(path, "%s/", leaf->name);
 		return;
@@ -264,26 +273,50 @@ void get_path(char *path, struct node *leaf)
 		strcat(path, "/");
 }
 
-int copy_random(struct node **list, unsigned length, unsigned num,
-		const char *dest)
+/* Shuffle array based on Fisher-Yates Algorithm */
+void shuffle_leaves(struct node **array, size_t n)
 {
-	unsigned int i = 0, n;
+    struct timeval tv;
+    struct node *t;
+    unsigned int i, j;
+
+    gettimeofday(&tv, NULL);
+    srand48(tv.tv_usec);
+
+    if (n > 1) {
+	    for (i = n - 1; i > 0; i--) {
+		    j = (unsigned int) (drand48()*(i+1));
+		    t = array[j];
+		    array[j] = array[i];
+		    array[i] = t;
+	    }
+    }
+}
+
+int copy_random(struct node **list, unsigned length, unsigned num,
+		const char *src, const char *dest)
+{
+	unsigned int i = 0, n = 0;
 	struct timeval tv;
-	char path[PATH_MAX], dpath[PATH_MAX];
+	char path[PATH_MAX], dpath[PATH_MAX], spath[PATH_MAX];
 
 	gettimeofday(&tv, NULL);
 	srand(tv.tv_usec);
 
-	while (i < length && i < num) {
-		n = random() % length;
-		get_path(path, list[n]);
-		sprintf(dpath, "%s/%s", dest, list[n]->name);
-		printf("%s to %s\n", path, dpath);
-		cp(path, dpath);
-		i++;
+	for (; i < length && n < num; i++) {
+		get_path(path, list[i]);
+		sprintf(spath, "%s/%s", src, path);
+		sprintf(dpath, "%s/%s", dest, list[i]->name);
+
+		if (exists_p(dpath))
+			continue;
+
+		printf("%s to %s\n", spath, dpath);
+		cp(spath, dpath);
+		n++;
 	}
 
-	return 0;
+	return n;
 }
 
 int main(int argc, char *argv[])
@@ -291,7 +324,8 @@ int main(int argc, char *argv[])
 	struct arguments args;
 	DIR *src, *dst;
 	struct node **leaves = NULL;
-	unsigned int size = 0, length = 0;
+	unsigned int size = 0, length = 0, n;
+	char *parent_dir;
 
 	program_name = argv[0];
 	args.limit = 1;
@@ -320,12 +354,16 @@ int main(int argc, char *argv[])
 	if (args.paths[DEST][strlen(args.paths[DEST]) - 1] == '/')
 		args.paths[DEST][strlen(args.paths[DEST]) - 1] = '\0';
 
-
 	build_tree(args.paths[SRC], &leaves, &size, &length);
 
-	copy_random(leaves, length, args.limit, args.paths[DEST]);
+	shuffle_leaves(leaves, length);
+	parent_dir = dirname(args.paths[SRC]);
+	n = copy_random(leaves, length, args.limit, parent_dir,
+			args.paths[DEST]);
 
 	release_tree(&leaves, length);
+
+	printf("Copied %d files.\n", n);
 
 	return 0;
 }
