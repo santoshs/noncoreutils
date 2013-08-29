@@ -26,10 +26,15 @@
 #include <err.h>
 #include <libgen.h>
 #include <pthread.h>
+#include <regex.h>
 
 #define SRC 0
 #define DEST 1
 
+#define TRUE 1
+#define FALSE 0
+
+#define REGERR_BUFSIZ 512
 char *program_name;
 const char *argp_program_version = "randcp 0.2\n"
 	"Copyright (C) 2013 Santosh Sivaraj.\n"
@@ -43,11 +48,15 @@ static char args_doc[] =
 
 static struct argp_option options[] = {
 	{"limit", 'l', "LIMIT", 0, "Limit number of copied files"},
+	{"pattern", 'p', "PATTERN", 0, "Copy files matching PATTERN"},
+	{"insensitive", 'i', NULL, 0, "Case insensitive match"},
 };
 
 struct arguments {
 	unsigned long limit;
+	unsigned icase;
 	char *paths[2];
+	char *pattern;
 };
 
 static error_t parse_opt(int key, char *arg, struct argp_state *state)
@@ -59,6 +68,14 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
 		arguments->limit = strtoul(arg, NULL, 10);
 		if (errno)
 			err(errno, "Invalid limit");
+		break;
+
+	case 'p':
+		arguments->pattern = arg;
+		break;
+
+	case 'i':
+		arguments->icase = TRUE;
 		break;
 
 	case ARGP_KEY_ARG:
@@ -288,12 +305,20 @@ void shuffle_leaves(struct node **array, size_t n)
     }
 }
 
+int matches_p(const char *string, const regex_t *pattern)
+{
+	if (regexec(pattern, string, 1, NULL, 0) == 0)
+		return 1;
+
+	return 0;
+}
+
 pthread_cond_t copy_wait;
 pthread_mutex_t copy_lock;
 int copied;
 
 int copy_random(struct node **list, unsigned length, unsigned num,
-		const char *src, const char *dest)
+		const char *src, const char *dest, const regex_t *pattern)
 {
 	unsigned int i = 0, n = 0;
 	struct timeval tv;
@@ -306,6 +331,9 @@ int copy_random(struct node **list, unsigned length, unsigned num,
 		get_path(path, list[i]);
 		sprintf(spath, "%s/%s", src, path);
 		sprintf(dpath, "%s/%s", dest, list[i]->name);
+
+		if (pattern && !matches_p(list[i]->name, pattern))
+			continue;
 
 		if (exists_p(dpath))
 			continue;
@@ -345,13 +373,15 @@ int main(int argc, char *argv[])
 	unsigned int size = 0, length = 0, n;
 	char *parent_dir;
 	pthread_t progress;
-	int ret, *retp;
+	int ret, *retp, rflags;
+	regex_t regex;
 
 	retp = &ret;
 	program_name = argv[0];
 	args.limit = 1;
 	args.paths[SRC] = NULL;
 	args.paths[DEST] = NULL;
+	args.pattern = NULL;
 
 	argp_parse(&argp, argc, argv, 0, 0, &args);
 
@@ -375,6 +405,19 @@ int main(int argc, char *argv[])
 	if (args.paths[DEST][strlen(args.paths[DEST]) - 1] == '/')
 		args.paths[DEST][strlen(args.paths[DEST]) - 1] = '\0';
 
+	/* We will compile the regexp before building the tree, so we will bail
+	 * out early if the regex is invalid */
+	rflags = REG_EXTENDED|REG_NOSUB;
+	if (args.icase)
+		rflags |= REG_ICASE;
+
+	if (args.pattern && (ret = regcomp(&regex, args.pattern, rflags))) {
+		char errbuf[REGERR_BUFSIZ];
+		regerror(ret, &regex, errbuf, REGERR_BUFSIZ);
+		fprintf(stderr, "%s\n", errbuf);
+		regfree(&regex);
+		return 2;
+	}
 	build_tree(args.paths[SRC], &leaves, &size, &length);
 
 	shuffle_leaves(leaves, length);
@@ -388,7 +431,7 @@ int main(int argc, char *argv[])
 	}
 
 	n = copy_random(leaves, length, args.limit, parent_dir,
-			args.paths[DEST]);
+			args.paths[DEST], args.pattern?&regex:NULL);
 	if (n < args.limit)
 		pthread_cancel(progress);
 	else
@@ -398,6 +441,9 @@ int main(int argc, char *argv[])
 
 	pthread_mutex_destroy(&copy_lock);
 	pthread_cond_destroy(&copy_wait);
+
+	if (args.pattern)
+		regfree(&regex);
 
 	printf("\rCopied %d files.\n", n);
 
