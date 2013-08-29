@@ -1,22 +1,12 @@
 /*
- * randcp.c - A random file copy program
+ * This file is part of randcp - A random file copy program
  *
  * Copyright (C) 2013  Santosh Sivaraj <santosh@fossix.org>
  *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 3 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
- *  02110-1301, USA
+ *  This program is distributed under the GNU General Public License version 2,
+ *  or (at your option) any later version, as published by the Free Software
+ *  Foundation. See http://www.gnu.org/licenses/gpl-2.0.html for the full GPL V2
+ *  license.
  */
 
 #define _ISOC99_SOURCE
@@ -35,12 +25,17 @@
 #include <fcntl.h>
 #include <err.h>
 #include <libgen.h>
+#include <pthread.h>
 
 #define SRC 0
 #define DEST 1
 
 char *program_name;
-const char *argp_program_version = "randcp 0.1";
+const char *argp_program_version = "randcp 0.2\n"
+	"Copyright (C) 2013 Santosh Sivaraj.\n"
+	"License GPLv2+: GNU GPL version 2 or later <http://gnu.org/licenses/gpl-2.0.html>.\n"
+	"This is free software: you are free to change and redistribute it.\n"
+	"There is NO WARRANTY, to the extent permitted by law.";
 const char *argp_program_bug_address = "<santosh@fossix.org>";
 static char doc[] = "randcp -- Copy random files";
 static char args_doc[] =
@@ -293,6 +288,10 @@ void shuffle_leaves(struct node **array, size_t n)
     }
 }
 
+pthread_cond_t copy_wait;
+pthread_mutex_t copy_lock;
+int copied;
+
 int copy_random(struct node **list, unsigned length, unsigned num,
 		const char *src, const char *dest)
 {
@@ -311,12 +310,31 @@ int copy_random(struct node **list, unsigned length, unsigned num,
 		if (exists_p(dpath))
 			continue;
 
-		printf("%s to %s\n", spath, dpath);
 		cp(spath, dpath);
 		n++;
+		pthread_mutex_lock(&copy_lock);
+		copied++;
+		pthread_cond_signal(&copy_wait);
+		pthread_mutex_unlock(&copy_lock);
 	}
 
 	return n;
+}
+
+void * print_progress(void *arg)
+{
+	int limit = *(int *)arg;
+
+	pthread_mutex_lock(&copy_lock);
+	while (copied != limit) {
+		pthread_cond_wait(&copy_wait, &copy_lock);
+
+		printf("\rcopied %3.0f%%", (((float)copied/(float)limit)) * 100);
+		fflush(stdout);
+	}
+	pthread_mutex_unlock(&copy_lock);
+
+	return NULL;
 }
 
 int main(int argc, char *argv[])
@@ -326,7 +344,10 @@ int main(int argc, char *argv[])
 	struct node **leaves = NULL;
 	unsigned int size = 0, length = 0, n;
 	char *parent_dir;
+	pthread_t progress;
+	int ret, *retp;
 
+	retp = &ret;
 	program_name = argv[0];
 	args.limit = 1;
 	args.paths[SRC] = NULL;
@@ -343,7 +364,7 @@ int main(int argc, char *argv[])
 		err(errno, "%s", args.paths[DEST]);
 
 	/* Both the arguments are directories, lets close the src, since
-	 * scandir will open it */
+	 * we will open it again*/
 	closedir(src);
 	closedir(dst);
 
@@ -358,12 +379,27 @@ int main(int argc, char *argv[])
 
 	shuffle_leaves(leaves, length);
 	parent_dir = dirname(args.paths[SRC]);
+
+	/* Lets start a progress bar, in a new thread */
+	if ((ret = pthread_create(&progress, NULL, print_progress,
+				  (void *)&args.limit))) {
+		errno = ret;
+		warn("Cannot start progress thread");
+	}
+
 	n = copy_random(leaves, length, args.limit, parent_dir,
 			args.paths[DEST]);
+	if (n < args.limit)
+		pthread_cancel(progress);
+	else
+		pthread_join(progress, (void **)&retp);
 
 	release_tree(&leaves, length);
 
-	printf("Copied %d files.\n", n);
+	pthread_mutex_destroy(&copy_lock);
+	pthread_cond_destroy(&copy_wait);
+
+	printf("\rCopied %d files.\n", n);
 
 	return 0;
 }
