@@ -49,7 +49,8 @@ static char args_doc[] =
 static struct argp_option options[] = {
 	{"limit", 'l', "LIMIT", 0, "Limit number of copied files"},
 	{"pattern", 'p', "PATTERN", 0, "Copy files matching PATTERN"},
-	{"insensitive", 'i', NULL, 0, "Case insensitive match"},
+	{"insensitive", 'i', 0, 0, "Case insensitive match"},
+	{},
 };
 
 struct arguments {
@@ -57,6 +58,15 @@ struct arguments {
 	unsigned icase;
 	char *paths[2];
 	char *pattern;
+};
+
+static error_t parse_opt(int, char *, struct argp_state *);
+static struct argp argp = {options, parse_opt, args_doc, doc};
+
+struct node {
+	int type;
+	char *name;
+	struct node *parent;
 };
 
 static error_t parse_opt(int key, char *arg, struct argp_state *state)
@@ -97,14 +107,6 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
 	}
 	return 0;
 }
-
-static struct argp argp = {options, parse_opt, args_doc, doc};
-
-struct node {
-	int type;
-	char *name;
-	struct node *parent;
-};
 
 int cp(const char * const spath, const char * const dpath)
 {
@@ -365,7 +367,7 @@ void * print_progress(void *arg)
 	return NULL;
 }
 
-int main(int argc, char *argv[])
+int main(int argc, char **argv)
 {
 	struct arguments args;
 	DIR *src, *dst;
