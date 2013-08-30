@@ -28,13 +28,8 @@
 #include <pthread.h>
 #include <regex.h>
 
-#define SRC 0
-#define DEST 1
+#include "randcp.h"
 
-#define TRUE 1
-#define FALSE 0
-
-#define REGERR_BUFSIZ 512
 char *program_name;
 const char *argp_program_version = "randcp 0.2\n"
 	"Copyright (C) 2013 Santosh Sivaraj.\n"
@@ -53,21 +48,8 @@ static struct argp_option options[] = {
 	{},
 };
 
-struct arguments {
-	unsigned long limit;
-	unsigned icase;
-	char *paths[2];
-	char *pattern;
-};
-
 static error_t parse_opt(int, char *, struct argp_state *);
 static struct argp argp = {options, parse_opt, args_doc, doc};
-
-struct node {
-	int type;
-	char *name;
-	struct node *parent;
-};
 
 static error_t parse_opt(int key, char *arg, struct argp_state *state)
 {
@@ -375,7 +357,7 @@ int main(int argc, char **argv)
 	unsigned int size = 0, length = 0, n;
 	char *parent_dir;
 	pthread_t progress;
-	int ret, *retp, rflags;
+	int ret, *retp, rflags = 0;
 	regex_t regex;
 
 	retp = &ret;
