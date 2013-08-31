@@ -11,7 +11,7 @@
 #define REGERR_BUFSIZ 512
 
 struct arguments {
-	unsigned long limit;
+	unsigned long limit, depth, recursive;
 	unsigned icase;
 	char *paths[2];
 	char *pattern;

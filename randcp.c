@@ -45,6 +45,8 @@ static struct argp_option options[] = {
 	{"limit", 'l', "LIMIT", 0, "Limit number of copied files"},
 	{"pattern", 'p', "PATTERN", 0, "Copy files matching PATTERN"},
 	{"insensitive", 'i', 0, 0, "Case insensitive match"},
+	{"recursive", 'r', 0, 0, "Copy files by scanning directories recursively."},
+	{"depth", 'd', "DEPTH", 0, "Copy only to a DEPTH depth in the folder hierarchy, only works with -r (recursive) option"},
 	{},
 };
 
@@ -68,6 +70,14 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
 
 	case 'i':
 		arguments->icase = TRUE;
+		break;
+
+	case 'r':
+		arguments->recursive = 1;
+		break;
+
+	case 'd':
+		arguments->depth = strtoul(arg, NULL, 10);
 		break;
 
 	case ARGP_KEY_ARG:
@@ -164,13 +174,18 @@ int exists_p(const char *path)
 	return 1;
 }
 
-struct node *build_tree(char *dir, struct node ***leaves,
-			unsigned *size, unsigned int *current)
+struct node *__build_tree(char *dir, struct node ***leaves, unsigned *size,
+			  unsigned int *current, struct arguments *args,
+			  unsigned int depth)
 {
 	DIR *d;
 	struct dirent *ent;
 	struct node *root = NULL, *node;
 	char path[PATH_MAX];
+
+	if (args && args->recursive && args->depth > 0)
+		if (depth > args->depth)
+			return NULL;
 
 	if (!leaves) {
 		printf("leaves cannot be NULL");
@@ -211,7 +226,11 @@ struct node *build_tree(char *dir, struct node ***leaves,
 
 		snprintf(path, NAME_MAX, "%s/%s", dir, ent->d_name);
 		if (is_dir(ent, path)) {
-			node = build_tree(path, leaves, size, current);
+			if (!args->recursive)
+				continue;
+
+			node = __build_tree(path, leaves, size, current, args,
+					    depth+1);
 		} else {
 			node = malloc(sizeof(struct node));
 			if (!node)
@@ -243,6 +262,14 @@ out:
 	if (errno)
 		err(errno, "Some error\n");
 	return root;
+}
+
+static inline
+struct node *build_tree(char *dir, struct node ***leaves,
+			unsigned *size, unsigned int *current,
+			struct arguments *args)
+{
+	return __build_tree(dir, leaves, size, current, args, 0);
 }
 
 void release_tree(struct node ***leaves_array, int length)
@@ -360,12 +387,10 @@ int main(int argc, char **argv)
 	int ret, *retp, rflags = 0;
 	regex_t regex;
 
+	memset(&args, 0, sizeof(struct arguments));
 	retp = &ret;
 	program_name = argv[0];
 	args.limit = 1;
-	args.paths[SRC] = NULL;
-	args.paths[DEST] = NULL;
-	args.pattern = NULL;
 
 	argp_parse(&argp, argc, argv, 0, 0, &args);
 
@@ -402,7 +427,7 @@ int main(int argc, char **argv)
 		regfree(&regex);
 		return 2;
 	}
-	build_tree(args.paths[SRC], &leaves, &size, &length);
+	build_tree(args.paths[SRC], &leaves, &size, &length, &args);
 
 	shuffle_leaves(leaves, length);
 	parent_dir = dirname(args.paths[SRC]);
