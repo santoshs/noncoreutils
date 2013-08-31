@@ -31,7 +31,7 @@
 #include "randcp.h"
 
 char *program_name;
-const char *argp_program_version = "randcp 0.2\n"
+const char *argp_program_version = "randcp 0.9\n"
 	"Copyright (C) 2013 Santosh Sivaraj.\n"
 	"License GPLv2+: GNU GPL version 2 or later <http://gnu.org/licenses/gpl-2.0.html>.\n"
 	"This is free software: you are free to change and redistribute it.\n"
@@ -47,6 +47,8 @@ static struct argp_option options[] = {
 	{"insensitive", 'i', 0, 0, "Case insensitive match"},
 	{"recursive", 'r', 0, 0, "Copy files by scanning directories recursively."},
 	{"depth", 'd', "DEPTH", 0, "Copy only to a DEPTH depth in the folder hierarchy, only works with -r (recursive) option"},
+	{"dry-run", 'y', 0, 0 , "Do not copy files -- useful to test patterns"},
+	{"echo", 'e', 0, 0, "Echo files being copied"},
 	{},
 };
 
@@ -78,6 +80,14 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
 
 	case 'd':
 		arguments->depth = strtoul(arg, NULL, 10);
+		break;
+
+	case 'y':
+		arguments->dry_run = 1;
+		break;
+
+	case 'e':
+		arguments->echo = 1;
 		break;
 
 	case ARGP_KEY_ARG:
@@ -327,11 +337,13 @@ int matches_p(const char *string, const regex_t *pattern)
 pthread_cond_t copy_wait;
 pthread_mutex_t copy_lock;
 int copied;
+int current;
 
-int copy_random(struct node **list, unsigned length, unsigned num,
-		const char *src, const char *dest, const regex_t *pattern)
+int copy_random(struct node **list, unsigned length, const char *src,
+		const char *dest, const regex_t *pattern,
+		struct arguments *args)
 {
-	unsigned int i = 0, n = 0;
+	unsigned int i = 0, n = 0, num = args->limit;
 	struct timeval tv;
 	char path[PATH_MAX], dpath[PATH_MAX], spath[PATH_MAX];
 
@@ -349,7 +361,11 @@ int copy_random(struct node **list, unsigned length, unsigned num,
 		if (exists_p(dpath))
 			continue;
 
-		cp(spath, dpath);
+		if (args->echo)
+			printf("%s\n", path);
+
+		if (!args->dry_run)
+			cp(spath, dpath);
 		n++;
 		pthread_mutex_lock(&copy_lock);
 		copied++;
@@ -362,14 +378,17 @@ int copy_random(struct node **list, unsigned length, unsigned num,
 
 void * print_progress(void *arg)
 {
-	int limit = *(int *)arg;
+	struct progress_args *pargs = (struct progress_args *)arg;
+	int limit = pargs->args->limit;
 
 	pthread_mutex_lock(&copy_lock);
 	while (copied != limit) {
 		pthread_cond_wait(&copy_wait, &copy_lock);
 
-		printf("\rcopied %3.0f%%", (((float)copied/(float)limit)) * 100);
-		fflush(stdout);
+		if (!pargs->args->echo) {
+			printf("\rcopied %3.0f%%", (((float)copied/(float)limit)) * 100);
+			fflush(stdout);
+		}
 	}
 	pthread_mutex_unlock(&copy_lock);
 
@@ -386,6 +405,7 @@ int main(int argc, char **argv)
 	pthread_t progress;
 	int ret, *retp, rflags = 0;
 	regex_t regex;
+	struct progress_args pargs;
 
 	memset(&args, 0, sizeof(struct arguments));
 	retp = &ret;
@@ -432,15 +452,19 @@ int main(int argc, char **argv)
 	shuffle_leaves(leaves, length);
 	parent_dir = dirname(args.paths[SRC]);
 
+	pargs.leaves = leaves;
+	pargs.args = &args;
+
 	/* Lets start a progress bar, in a new thread */
 	if ((ret = pthread_create(&progress, NULL, print_progress,
-				  (void *)&args.limit))) {
+				  (void *)&pargs))) {
 		errno = ret;
 		warn("Cannot start progress thread");
 	}
 
-	n = copy_random(leaves, length, args.limit, parent_dir,
-			args.paths[DEST], args.pattern?&regex:NULL);
+	n = copy_random(leaves, length, parent_dir, args.paths[DEST],
+			args.pattern?&regex:NULL, &args);
+
 	if (n < args.limit)
 		pthread_cancel(progress);
 	else
