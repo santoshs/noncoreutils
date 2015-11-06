@@ -21,7 +21,10 @@ install: $(TARGET) $(MANPAGE)
 	install $(TARGET) $(DESTDIR)
 	install $(MANPAGE) $(MANDIR)
 
+test:
+	@echo "test sucess"
+
 clean:
 	rm -f $(OBJS) $(TARGET)
 
-.PHONY: clean all
+.PHONY: clean test all
