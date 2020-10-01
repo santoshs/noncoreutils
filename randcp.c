@@ -10,7 +10,7 @@
  */
 
 #define _ISOC99_SOURCE
-#define _BSD_SOURCE		/* for d_type constants */
+#define _DEFAULT_SOURCE		/* for d_type constants */
 #define _XOPEN_SOURCE
 
 #include <stdio.h>
@@ -191,7 +191,7 @@ struct node *__build_tree(char *dir, struct node ***leaves, unsigned *size,
 	DIR *d;
 	struct dirent *ent;
 	struct node *root = NULL, *node;
-	char path[PATH_MAX];
+	char path[PATH_MAX + 2];
 
 	if (args && args->recursive && args->depth > 0)
 		if (depth > args->depth)
@@ -234,7 +234,7 @@ struct node *__build_tree(char *dir, struct node ***leaves, unsigned *size,
 		if (strcmp(ent->d_name, "..") == 0 || strcmp(ent->d_name, ".") == 0)
 			continue;
 
-		snprintf(path, NAME_MAX, "%s/%s", dir, ent->d_name);
+		snprintf(path, NAME_MAX + 2, "%s/%s", dir, ent->d_name);
 		if (is_dir(ent, path)) {
 			if (!args->recursive)
 				continue;
@@ -345,7 +345,7 @@ int copy_random(struct node **list, unsigned length, const char *src,
 {
 	unsigned int i = 0, n = 0, num = args->limit;
 	struct timeval tv;
-	char path[PATH_MAX], dpath[PATH_MAX], spath[PATH_MAX];
+	char path[PATH_MAX], dpath[PATH_MAX], spath[PATH_MAX + 1];
 
 	gettimeofday(&tv, NULL);
 	srand(tv.tv_usec);
