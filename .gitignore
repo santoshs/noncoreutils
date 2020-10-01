@@ -3,7 +3,10 @@ GRTAGS
 GTAGS
 randcp
 randcp.o
+cookie.o
+cookie
 TAGS
 cscope.in.out
 cscope.out
 cscope.po.out
+.ccls-cache
